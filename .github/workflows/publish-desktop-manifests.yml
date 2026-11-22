@@ -1,0 +1,152 @@
+name: Publish desktop update manifests
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      deploy_only:
+        description: Deploy the manifests already on main
+        type: boolean
+        default: false
+
+permissions: {}
+concurrency:
+  group: ${{ inputs.deploy_only && 'desktop-manifest-pages' || 'desktop-manifest-update' }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.event_name == 'release' || !inputs.deploy_only
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Read published desktop releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" > "$RUNNER_TEMP/desktop-releases.json"
+      - name: Generate both manifests from the release assets
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          from pathlib import Path
+          from urllib.request import urlopen
+
+          channels = ("osx-arm64", "win-x64")
+          def version_key(version):
+              return tuple(int(part) for part in version.split("."))
+
+          release_file = Path(os.environ["RUNNER_TEMP"]) / "desktop-releases.json"
+          releases = json.loads(release_file.read_text())
+          candidates = []
+          for release in (release for page in releases for release in page):
+              match = re.fullmatch(r"v((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))", release["tag_name"])
+              if release["draft"] or not match:
+                  continue
+              version = match[1]
+              uploaded = {asset["name"]: asset for asset in release["assets"] if asset["state"] == "uploaded"}
+              names = {channel: f"FoxLinkDesktop-{version}-{channel}-full.nupkg" for channel in channels}
+              if all(name in uploaded for name in names.values()):
+                  candidates.append((version_key(version), version, {channel: uploaded[name] for channel, name in names.items()}))
+
+          if not candidates:
+              raise SystemExit("No published vX.Y.Z release has both desktop update packages.")
+          _, version, assets = max(candidates, key=lambda candidate: candidate[0])
+          event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+          published_tag = event.get("release", {}).get("tag_name")
+          if published_tag and not any(f"v{entry[1]}" == published_tag for entry in candidates):
+              raise SystemExit(f"{published_tag} is missing the required versioned Mac or Windows update package.")
+
+          manifests = {}
+          for channel, asset in assets.items():
+              path = Path(f"releases.{channel}.json")
+              previous = json.loads(path.read_text())["Assets"]
+              if any(version_key(entry["Version"]) > version_key(version) for entry in previous):
+                  raise SystemExit("Refusing to roll the published desktop version back.")
+
+              filename = asset["name"]
+              url = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/download/v{version}/{filename}"
+              if url != asset["browser_download_url"]:
+                  raise SystemExit(f"Unexpected download URL for {filename}.")
+              sha1, sha256 = hashlib.sha1(), hashlib.sha256()
+              size = 0
+              with urlopen(url, timeout=60) as package:
+                  for chunk in iter(lambda: package.read(1024 * 1024), b""):
+                      size += len(chunk)
+                      sha1.update(chunk)
+                      sha256.update(chunk)
+              digest = sha256.hexdigest()
+              if not size or size != asset["size"] or asset.get("digest") not in (None, f"sha256:{digest}"):
+                  raise SystemExit(f"Release size or digest mismatch for {filename}.")
+              if any(entry["Version"] == version and entry.get("SHA256", "").lower() != digest for entry in previous):
+                  raise SystemExit(f"The bytes of already published version {version} changed for {channel}.")
+
+              manifests[path] = {"Assets": [{
+                  "PackageId": "FoxLinkDesktop",
+                  "Version": version,
+                  "Type": "Full",
+                  "FileName": filename,
+                  "SHA1": sha1.hexdigest().upper(),
+                  "SHA256": digest.upper(),
+                  "Size": size,
+              }]}
+              print(f"Verified {filename} ({size} bytes, SHA-256 {digest}).")
+
+          for path, manifest in manifests.items():
+              path.write_text(json.dumps(manifest, indent=2) + "\n")
+          PY
+      - name: Commit the verified pair
+        run: |
+          git add -- releases.osx-arm64.json releases.win-x64.json
+          if git diff --cached --quiet; then
+            echo "Both manifests already match the published release."
+          else
+            git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'Update desktop release manifests'
+            git push origin HEAD:main
+          fi
+      - name: Start Pages deployment on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run publish-desktop-manifests.yml --ref main -f deploy_only=true
+
+  package:
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy_only && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Stage the two public manifests
+        run: |
+          mkdir -p pages-manifests
+          cp releases.osx-arm64.json releases.win-x64.json pages-manifests/
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: pages-manifests
+
+  deploy:
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.publish.outputs.page_url }}
+    steps:
+      - uses: actions/deploy-pages@v4
+        id: publish
