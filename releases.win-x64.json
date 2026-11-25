@@ -2,12 +2,12 @@
   "Assets": [
     {
       "PackageId": "FoxLinkDesktop",
-      "Version": "0.3.11",
+      "Version": "0.3.12",
       "Type": "Full",
-      "FileName": "FoxLinkDesktop-0.3.11-win-x64-full.nupkg",
-      "SHA1": "045C0D8E814FD51BC7507BFE3F3DC08CB8118F9E",
-      "SHA256": "434F5055CCF5599788F07655F4B38CE59A59C1339EBC75F0F58C36F724C74D78",
-      "Size": 62779606
+      "FileName": "FoxLinkDesktop-0.3.12-win-x64-full.nupkg",
+      "SHA1": "F0A1B739B78D94D029E360D052A2A61EDF93D8FD",
+      "SHA256": "F41F48E935A8728C9246F3D6E77839F8893C860642FDF86649796290BE86DB19",
+      "Size": 62780247
     }
   ]
 }

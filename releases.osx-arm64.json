@@ -2,12 +2,12 @@
   "Assets": [
     {
       "PackageId": "FoxLinkDesktop",
-      "Version": "0.3.11",
+      "Version": "0.3.12",
       "Type": "Full",
-      "FileName": "FoxLinkDesktop-0.3.11-osx-arm64-full.nupkg",
-      "SHA1": "D3AE657A3284D1B63F755C3F2B307907320A22A3",
-      "SHA256": "DB6F6DF2CFB14944274B062F5570CC2E7389DACAAC39630987A84815F37016BE",
-      "Size": 56697012
+      "FileName": "FoxLinkDesktop-0.3.12-osx-arm64-full.nupkg",
+      "SHA1": "686B0E3D2A34B3D56F25497DDA09AB41CB52A8B3",
+      "SHA256": "E40DF0C60465D9BAB7D44482CE320B4D17A83E01C451205505A66640E1242CB7",
+      "Size": 56697201
     }
   ]
 }
