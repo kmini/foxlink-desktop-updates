@@ -105,23 +105,28 @@ jobs:
               }]}
               print(f"Verified {filename} ({size} bytes, SHA-256 {digest}).")
 
-          installer_path = Path("downloads.win-x64.json")
-          for _, installer_version, _ in sorted(candidates, key=lambda candidate: candidate[0], reverse=True):
-              release = next(row for page in releases for row in page if row["tag_name"] == f"v{installer_version}")
-              name = f"FoxLinkDesktop-{installer_version}-win-x64-Setup.exe"
-              installer = next((item for item in release["assets"] if item["name"] == name and item["state"] == "uploaded"), None)
-              if installer is None:
-                  continue
-              if installer_path.exists() and version_key(json.loads(installer_path.read_text())["Version"]) > version_key(installer_version):
+          latest_first = sorted(candidates, key=lambda candidate: candidate[0], reverse=True)
+          by_tag = {release["tag_name"]: release for page in releases for release in page}
+          for channel, extension in (("osx-arm64", "pkg"), ("win-x64", "exe")):
+              installer_path = Path(f"downloads.{channel}.json")
+              for _, installer_version, _ in latest_first:
+                  release = by_tag[f"v{installer_version}"]
+                  suffix = f"{channel}-Setup.{extension}"
+                  names = (f"FoxLinkDesktop-{installer_version}-{suffix}", f"FoxLinkDesktop-{suffix}")
+                  uploaded = {item["name"]: item for item in release["assets"] if item["state"] == "uploaded"}
+                  installer = next((uploaded[name] for name in names if name in uploaded), None)
+                  if installer is None:
+                      continue
+                  if installer_path.exists() and version_key(json.loads(installer_path.read_text())["Version"]) > version_key(installer_version):
+                      break
+                  filename, size, _, digest = verify_asset(installer, installer_version)
+                  manifests[installer_path] = {
+                      "Version": installer_version,
+                      "FileName": filename,
+                      "SHA256": digest.upper(),
+                      "Size": size,
+                  }
                   break
-              filename, size, _, digest = verify_asset(installer, installer_version)
-              manifests[installer_path] = {
-                  "Version": installer_version,
-                  "FileName": filename,
-                  "SHA256": digest.upper(),
-                  "Size": size,
-              }
-              break
 
           for path, manifest in manifests.items():
               path.write_text(json.dumps(manifest, indent=2) + "\n")
@@ -129,7 +134,9 @@ jobs:
       - name: Commit the verified pair
         run: |
           git add -- releases.osx-arm64.json releases.win-x64.json
-          if test -f downloads.win-x64.json; then git add -- downloads.win-x64.json; fi
+          for file in downloads.osx-arm64.json downloads.win-x64.json; do
+            if test -f "$file"; then git add -- "$file"; fi
+          done
           if git diff --cached --quiet; then
             echo "Both manifests already match the published release."
           else
@@ -156,7 +163,9 @@ jobs:
         run: |
           mkdir -p pages-manifests
           cp releases.osx-arm64.json releases.win-x64.json pages-manifests/
-          if test -f downloads.win-x64.json; then cp downloads.win-x64.json pages-manifests/; fi
+          for file in downloads.osx-arm64.json downloads.win-x64.json; do
+            if test -f "$file"; then cp "$file" pages-manifests/; fi
+          done
       - uses: actions/upload-pages-artifact@v4
         with:
           path: pages-manifests
