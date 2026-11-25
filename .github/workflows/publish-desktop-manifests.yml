@@ -66,13 +66,7 @@ jobs:
           if published_tag and not any(f"v{entry[1]}" == published_tag for entry in candidates):
               raise SystemExit(f"{published_tag} is missing the required versioned Mac or Windows update package.")
 
-          manifests = {}
-          for channel, asset in assets.items():
-              path = Path(f"releases.{channel}.json")
-              previous = json.loads(path.read_text())["Assets"]
-              if any(version_key(entry["Version"]) > version_key(version) for entry in previous):
-                  raise SystemExit("Refusing to roll the published desktop version back.")
-
+          def verify_asset(asset, version):
               filename = asset["name"]
               url = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/download/v{version}/{filename}"
               if url != asset["browser_download_url"]:
@@ -87,6 +81,16 @@ jobs:
               digest = sha256.hexdigest()
               if not size or size != asset["size"] or asset.get("digest") not in (None, f"sha256:{digest}"):
                   raise SystemExit(f"Release size or digest mismatch for {filename}.")
+              return filename, size, sha1.hexdigest(), digest
+
+          manifests = {}
+          for channel, asset in assets.items():
+              path = Path(f"releases.{channel}.json")
+              previous = json.loads(path.read_text())["Assets"]
+              if any(version_key(entry["Version"]) > version_key(version) for entry in previous):
+                  raise SystemExit("Refusing to roll the published desktop version back.")
+
+              filename, size, sha1, digest = verify_asset(asset, version)
               if any(entry["Version"] == version and entry.get("SHA256", "").lower() != digest for entry in previous):
                   raise SystemExit(f"The bytes of already published version {version} changed for {channel}.")
 
@@ -95,11 +99,29 @@ jobs:
                   "Version": version,
                   "Type": "Full",
                   "FileName": filename,
-                  "SHA1": sha1.hexdigest().upper(),
+                  "SHA1": sha1.upper(),
                   "SHA256": digest.upper(),
                   "Size": size,
               }]}
               print(f"Verified {filename} ({size} bytes, SHA-256 {digest}).")
+
+          installer_path = Path("downloads.win-x64.json")
+          for _, installer_version, _ in sorted(candidates, key=lambda candidate: candidate[0], reverse=True):
+              release = next(row for page in releases for row in page if row["tag_name"] == f"v{installer_version}")
+              name = f"FoxLinkDesktop-{installer_version}-win-x64-Setup.exe"
+              installer = next((item for item in release["assets"] if item["name"] == name and item["state"] == "uploaded"), None)
+              if installer is None:
+                  continue
+              if installer_path.exists() and version_key(json.loads(installer_path.read_text())["Version"]) > version_key(installer_version):
+                  break
+              filename, size, _, digest = verify_asset(installer, installer_version)
+              manifests[installer_path] = {
+                  "Version": installer_version,
+                  "FileName": filename,
+                  "SHA256": digest.upper(),
+                  "Size": size,
+              }
+              break
 
           for path, manifest in manifests.items():
               path.write_text(json.dumps(manifest, indent=2) + "\n")
@@ -107,6 +129,7 @@ jobs:
       - name: Commit the verified pair
         run: |
           git add -- releases.osx-arm64.json releases.win-x64.json
+          if test -f downloads.win-x64.json; then git add -- downloads.win-x64.json; fi
           if git diff --cached --quiet; then
             echo "Both manifests already match the published release."
           else
@@ -129,10 +152,11 @@ jobs:
         with:
           ref: main
           persist-credentials: false
-      - name: Stage the two public manifests
+      - name: Stage the public manifests
         run: |
           mkdir -p pages-manifests
           cp releases.osx-arm64.json releases.win-x64.json pages-manifests/
+          if test -f downloads.win-x64.json; then cp downloads.win-x64.json pages-manifests/; fi
       - uses: actions/upload-pages-artifact@v4
         with:
           path: pages-manifests
